@@ -1,6 +1,18 @@
 import re
 import random
+import os
 from typing import Tuple, Dict, List
+
+# -----------------------------
+# LLM (Groq) Setup
+# -----------------------------
+from groq import Groq
+
+USE_LLM = True  # set to False anytime to disable LLM safely
+
+_groq_client = None
+if USE_LLM and os.getenv("GROQ_API_KEY"):
+    _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # -----------------------------
 # Simple Persona States
@@ -56,24 +68,19 @@ def detect_scam(message: str) -> Tuple[bool, float]:
     message_lower = message.lower()
     score = 0.0
 
-    # Keyword match
     keyword_count = sum(1 for word in SCAM_KEYWORDS if word in message_lower)
     if keyword_count > 0:
         score += 0.3 + min(keyword_count * 0.1, 0.5)
 
-    # Urgency
     if any(word in message_lower for word in URGENCY_KEYWORDS):
         score += 0.2
 
-    # Payment intent
     if any(word in message_lower for word in PAYMENT_KEYWORDS):
         score += 0.2
 
-    # Links
     if re.search(URL_PATTERN, message):
         score += 0.2
 
-    # Direct payment identifiers
     if re.search(UPI_PATTERN, message):
         score += 0.3
     if re.search(BANK_ACCOUNT_PATTERN, message):
@@ -131,7 +138,39 @@ def determine_next_state(
     return PersonaState.IDLE
 
 # -----------------------------
-# Agent Reply Generator
+# LLM Reply Generator
+# -----------------------------
+def llm_generate_reply(state: str, message: str, entities: Dict[str, List[str]]) -> str:
+    if _groq_client is None:
+        raise RuntimeError("LLM not available")
+
+    prompt = f"""
+You are a 55-year-old non-technical, polite, slightly worried person.
+You believe the sender is helping you.
+
+Rules:
+- Never accuse
+- Never mention police, scams, or fraud
+- Ask clarifying questions
+- Try to get payment details again
+- Keep reply under 2 sentences
+
+Current persona state: {state}
+Last message from sender: "{message}"
+Known details so far: {entities}
+"""
+
+    response = _groq_client.chat.completions.create(
+        model="llama3-8b-8192",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=80,
+        temperature=0.6
+    )
+
+    return response.choices[0].message.content.strip()
+
+# -----------------------------
+# Agent Reply Generator (LLM + Fallback)
 # -----------------------------
 def generate_agent_reply(
     state: str,
@@ -139,6 +178,14 @@ def generate_agent_reply(
     entities: Dict[str, List[str]]
 ) -> str:
 
+    # ---- TRY LLM FIRST ----
+    if USE_LLM:
+        try:
+            return llm_generate_reply(state, message, entities)
+        except Exception:
+            pass  # Safe fallback to rule-based replies
+
+    # ---- FALLBACK RULE-BASED REPLIES ----
     if state == PersonaState.IDLE:
         return "Hello, I received this message but I am not sure what it is about."
 
