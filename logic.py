@@ -8,7 +8,7 @@ from typing import Tuple, Dict, List
 # -----------------------------
 from groq import Groq
 
-USE_LLM = True  # set to False anytime to disable LLM safely
+USE_LLM = True  # set False anytime to disable LLM safely
 
 _groq_client = None
 if USE_LLM and os.getenv("GROQ_API_KEY"):
@@ -138,33 +138,36 @@ def determine_next_state(
     return PersonaState.IDLE
 
 # -----------------------------
-# LLM Reply Generator
+# LLM Reply Generator (Groq-safe)
 # -----------------------------
 def llm_generate_reply(state: str, message: str, entities: Dict[str, List[str]]) -> str:
     if _groq_client is None:
         raise RuntimeError("LLM not available")
 
-    prompt = f"""
-You are a 55-year-old non-technical, polite, slightly worried person.
-You believe the sender is helping you.
-
-Rules:
-- Never accuse
-- Never mention police, scams, or fraud
-- Ask clarifying questions
-- Try to get payment details again
-- Keep reply under 2 sentences
-
-Current persona state: {state}
-Last message from sender: "{message}"
-Known details so far: {entities}
-"""
-
     response = _groq_client.chat.completions.create(
         model="llama3-8b-8192",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=80,
-        temperature=0.6
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a 55-year-old non-technical, polite, slightly worried person. "
+                    "You believe the sender is helping you. "
+                    "Never accuse. Never mention police, scams, or fraud. "
+                    "Ask clarifying questions and try to get payment details again. "
+                    "Keep replies under 2 sentences."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Current persona state: {state}\n"
+                    f"Last message from sender: {message}\n"
+                    f"Known details so far: {entities}"
+                )
+            }
+        ],
+        max_tokens=60,
+        temperature=0.4
     )
 
     return response.choices[0].message.content.strip()
@@ -183,7 +186,7 @@ def generate_agent_reply(
         try:
             return llm_generate_reply(state, message, entities)
         except Exception:
-            pass  # Safe fallback to rule-based replies
+            pass  # Safe fallback if LLM fails
 
     # ---- FALLBACK RULE-BASED REPLIES ----
     if state == PersonaState.IDLE:
