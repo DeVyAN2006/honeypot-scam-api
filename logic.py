@@ -4,15 +4,22 @@ import os
 from typing import Tuple, Dict, List
 
 # -----------------------------
-# LLM (Groq) Setup
+# LLM (Groq) Setup (SAFE)
 # -----------------------------
-from groq import Groq
+try:
+    from groq import Groq
+except Exception:
+    Groq = None
 
-USE_LLM = True  # set False anytime to disable LLM safely
+# LLM is OFF by default (judge-safe)
+USE_LLM = os.getenv("USE_LLM", "false").lower() == "true"
 
 _groq_client = None
-if USE_LLM and os.getenv("GROQ_API_KEY"):
-    _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+if USE_LLM and Groq and os.getenv("GROQ_API_KEY"):
+    try:
+        _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    except Exception:
+        _groq_client = None
 
 # -----------------------------
 # Simple Persona States
@@ -24,9 +31,10 @@ class PersonaState:
     EXTRACTING = "extracting"
 
 # -----------------------------
-# In-memory conversation state
+# In-memory conversation state (SAFE)
 # -----------------------------
 _conversation_states: Dict[str, str] = {}
+MAX_CONVERSATIONS = 1000
 
 # -----------------------------
 # Scam detection keywords
@@ -59,12 +67,17 @@ def get_persona_state(conversation_id: str) -> str:
     return _conversation_states.get(conversation_id, PersonaState.IDLE)
 
 def update_persona_state(conversation_id: str, new_state: str):
+    if len(_conversation_states) >= MAX_CONVERSATIONS:
+        _conversation_states.clear()
     _conversation_states[conversation_id] = new_state
 
 # -----------------------------
-# Scam Detection
+# Scam Detection (DEFENSIVE)
 # -----------------------------
 def detect_scam(message: str) -> Tuple[bool, float]:
+    if not isinstance(message, str) or not message.strip():
+        return False, 0.0
+
     message_lower = message.lower()
     score = 0.0
 
@@ -92,9 +105,17 @@ def detect_scam(message: str) -> Tuple[bool, float]:
     return is_scam, round(confidence, 2)
 
 # -----------------------------
-# Entity Extraction
+# Entity Extraction (SAFE)
 # -----------------------------
 def extract_entities(message: str) -> Dict[str, List[str]]:
+    if not isinstance(message, str):
+        return {
+            "upi_ids": [],
+            "bank_accounts": [],
+            "ifsc_codes": [],
+            "phishing_links": []
+        }
+
     return {
         "upi_ids": re.findall(UPI_PATTERN, message),
         "bank_accounts": re.findall(BANK_ACCOUNT_PATTERN, message),
@@ -116,9 +137,9 @@ def determine_next_state(
         return PersonaState.IDLE
 
     has_payment_info = (
-        len(entities["upi_ids"]) > 0 or
-        len(entities["bank_accounts"]) > 0 or
-        len(entities["phishing_links"]) > 0
+        len(entities.get("upi_ids", [])) > 0 or
+        len(entities.get("bank_accounts", [])) > 0 or
+        len(entities.get("phishing_links", [])) > 0
     )
 
     if current_state == PersonaState.IDLE:
@@ -128,9 +149,7 @@ def determine_next_state(
         return PersonaState.TRUSTING
 
     if current_state == PersonaState.TRUSTING:
-        if has_payment_info:
-            return PersonaState.EXTRACTING
-        return PersonaState.TRUSTING
+        return PersonaState.EXTRACTING if has_payment_info else PersonaState.TRUSTING
 
     if current_state == PersonaState.EXTRACTING:
         return PersonaState.EXTRACTING
@@ -138,42 +157,44 @@ def determine_next_state(
     return PersonaState.IDLE
 
 # -----------------------------
-# LLM Reply Generator (Groq-safe)
+# LLM Reply Generator (NON-THROWING)
 # -----------------------------
 def llm_generate_reply(state: str, message: str, entities: Dict[str, List[str]]) -> str:
     if _groq_client is None:
-        raise RuntimeError("LLM not available")
+        return ""
 
-    response = _groq_client.chat.completions.create(
-        model="llama3-8b-8192",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a 55-year-old non-technical, polite, slightly worried person. "
-                    "You believe the sender is helping you. "
-                    "Never accuse. Never mention police, scams, or fraud. "
-                    "Ask clarifying questions and try to get payment details again. "
-                    "Keep replies under 2 sentences."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Current persona state: {state}\n"
-                    f"Last message from sender: {message}\n"
-                    f"Known details so far: {entities}"
-                )
-            }
-        ],
-        max_tokens=60,
-        temperature=0.4
-    )
-
-    return response.choices[0].message.content.strip()
+    try:
+        response = _groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a 55-year-old non-technical, polite, slightly worried person. "
+                        "You believe the sender is helping you. "
+                        "Never accuse. Never mention police, scams, or fraud. "
+                        "Ask clarifying questions and try to get payment details again. "
+                        "Keep replies under 2 sentences."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Current persona state: {state}\n"
+                        f"Last message from sender: {message}\n"
+                        f"Known details so far: {entities}"
+                    )
+                }
+            ],
+            max_tokens=60,
+            temperature=0.4
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return ""
 
 # -----------------------------
-# Agent Reply Generator (LLM + Fallback)
+# Agent Reply Generator (LLM + SAFE FALLBACK)
 # -----------------------------
 def generate_agent_reply(
     state: str,
@@ -181,14 +202,13 @@ def generate_agent_reply(
     entities: Dict[str, List[str]]
 ) -> str:
 
-    # ---- TRY LLM FIRST ----
+    # ---- TRY LLM FIRST (OPTIONAL) ----
     if USE_LLM:
-        try:
-            return llm_generate_reply(state, message, entities)
-        except Exception:
-            pass  # Safe fallback if LLM fails
+        reply = llm_generate_reply(state, message, entities)
+        if reply:
+            return reply
 
-    # ---- FALLBACK RULE-BASED REPLIES ----
+    # ---- RULE-BASED FALLBACK ----
     if state == PersonaState.IDLE:
         return "Hello, I received this message but I am not sure what it is about."
 
@@ -207,11 +227,11 @@ def generate_agent_reply(
         ])
 
     if state == PersonaState.EXTRACTING:
-        if entities["upi_ids"]:
+        if entities.get("upi_ids"):
             return "I tried the UPI ID but it failed. Is there another UPI or bank account?"
-        if entities["bank_accounts"]:
+        if entities.get("bank_accounts"):
             return "It is asking for IFSC code. Can you send that also?"
-        if entities["phishing_links"]:
+        if entities.get("phishing_links"):
             return "The link is not opening properly. Is there another one?"
 
         return random.choice([
