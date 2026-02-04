@@ -53,7 +53,9 @@ def get_safe_response(reply: str = "Honeypot API is alive.") -> HoneypotResponse
         persona_state="idle"
     )
 
-# --- Health / Root (VERY IMPORTANT) ---
+# -------------------------
+# Health / Root Endpoints
+# -------------------------
 
 @app.get("/")
 def root():
@@ -63,36 +65,38 @@ def root():
 def health():
     return {"status": "ok"}
 
-# --- GET Fallback (Judge-safe) ---
+# IMPORTANT: allow HEAD for UptimeRobot
+@app.head("/health")
+def health_head():
+    return
+
+# -------------------------
+# GET fallback (judge-safe)
+# -------------------------
 
 @app.get("/api/honeypot", response_model=HoneypotResponse)
-def honeypot_get_fallback():
-    """
-    Handles GET requests from judges, browsers, and bots.
-    Always returns valid JSON.
-    """
+def honeypot_get():
     return get_safe_response("Honeypot API ready.")
 
-# --- POST Endpoint (Full Logic) ---
+# -------------------------
+# POST endpoint (full logic)
+# -------------------------
 
 @app.post("/api/honeypot", response_model=HoneypotResponse)
-async def honeypot_post_endpoint(
+async def honeypot_post(
     request: HoneypotRequest,
     x_api_key: Optional[str] = Header(None)
 ):
-    # Optional API key check (judge-safe)
+    # Optional API key (judge-safe)
     if x_api_key is not None and x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
     try:
-        # If logic failed to load, fail safely
         if logic is None:
             return get_safe_response("Logic unavailable, running in safe mode.")
 
         # Detect scam
         is_scam, confidence = logic.detect_scam(request.message)
-
-        # Clamp confidence
         confidence = max(0.0, min(1.0, confidence))
 
         # Extract entities
@@ -128,7 +132,9 @@ async def honeypot_post_endpoint(
         logger.error(f"Internal Error: {str(e)}")
         return get_safe_response("Internal error handled safely.")
 
-# --- Validation Error Handler (NO 422 EVER) ---
+# -------------------------
+# Validation error handler
+# -------------------------
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -138,7 +144,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content=get_safe_response("Invalid input received.").dict()
     )
 
-# --- Global Error Handler (FINAL SAFETY NET) ---
+# -------------------------
+# Global error handler
+# -------------------------
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
