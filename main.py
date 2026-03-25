@@ -38,7 +38,6 @@ def health():
 
 # -------------------------------------------------
 # Main evaluator endpoint
-# (accepts ANY payload shape safely)
 # -------------------------------------------------
 
 @app.post("/api/honeypot")
@@ -46,11 +45,17 @@ async def honeypot_handler(request: Request):
     try:
         data = await request.json()
 
-        # Safely extract text from evaluator payload
-        text = (
-            data.get("message", {})
-                .get("text", "")
-        )
+        # ✅ Flexible input handling (fix)
+        text = ""
+        if isinstance(data, dict):
+            if isinstance(data.get("message"), dict):
+                text = data.get("message", {}).get("text", "")
+            elif isinstance(data.get("message"), str):
+                text = data.get("message")
+            elif "text" in data:
+                text = data.get("text", "")
+
+        text = str(text).strip()
 
         if not text:
             return evaluator_response("Invalid input received.")
@@ -58,19 +63,14 @@ async def honeypot_handler(request: Request):
         # Optional internal logic (hidden from evaluator)
         if logic:
             try:
-                is_scam, confidence = logic.detect_scam(text)
-                reply = (
-                    "This message appears to be a scam attempt."
-                    if is_scam
-                    else "This message does not appear to be a scam."
-                )
+                # ✅ Use your improved deterministic reply
+                reply = logic.generate_agent_reply(text)
             except Exception as e:
-                logger.error(f"Logic error: {e}")
+                logger.error(f"Logic error on input [{text}]: {e}")
                 reply = "Message processed safely."
         else:
             reply = "Message processed safely."
 
-        # 🔒 Evaluator sees ONLY this
         return evaluator_response(reply)
 
     except Exception as e:
