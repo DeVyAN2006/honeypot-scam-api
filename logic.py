@@ -17,11 +17,13 @@ PAYMENT_KEYWORDS = [
     "pay", "payment", "transfer", "upi", "bank"
 ]
 
+NEGATIONS = ["not", "no", "never"]
+
 # -----------------------------
 # Regex patterns
 # -----------------------------
 UPI_PATTERN = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
-BANK_ACCOUNT_PATTERN = r"\b\d{9,18}\b"
+BANK_ACCOUNT_PATTERN = r"(account|a/c|acct)[^\d]*(\d{9,18})"
 IFSC_PATTERN = r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
 URL_PATTERN = r"https?://[^\s]+"
 
@@ -35,15 +37,28 @@ def detect_scam(message: str) -> Tuple[bool, float]:
     msg = message.lower()
     score = 0.0
 
-    score += sum(0.1 for w in SCAM_KEYWORDS if w in msg)
-    score += 0.2 if any(w in msg for w in URGENCY_KEYWORDS) else 0.0
-    score += 0.2 if any(w in msg for w in PAYMENT_KEYWORDS) else 0.0
+    # keyword scoring with word boundaries + cap
+    keyword_hits = sum(
+        0.1 for w in SCAM_KEYWORDS if re.search(rf"\b{w}\b", msg)
+    )
+    score += min(0.3, keyword_hits)
+
+    # urgency + payment
+    score += 0.2 if any(re.search(rf"\b{w}\b", msg) for w in URGENCY_KEYWORDS) else 0.0
+    score += 0.2 if any(re.search(rf"\b{w}\b", msg) for w in PAYMENT_KEYWORDS) else 0.0
+
+    # patterns
     score += 0.2 if re.search(URL_PATTERN, message) else 0.0
     score += 0.3 if re.search(UPI_PATTERN, message) else 0.0
     score += 0.3 if re.search(BANK_ACCOUNT_PATTERN, message) else 0.0
 
+    # negation handling (basic)
+    if any(re.search(rf"\b{neg}\b", msg) for neg in NEGATIONS):
+        score *= 0.7
+
     confidence = min(round(score, 2), 1.0)
-    return confidence > 0.4, confidence
+    return confidence >= 0.6, confidence
+
 
 # -----------------------------
 # Entity Extraction (SAFE)
@@ -58,11 +73,12 @@ def extract_entities(message: str) -> Dict[str, List[str]]:
         }
 
     return {
-        "upi_ids": re.findall(UPI_PATTERN, message),
-        "bank_accounts": re.findall(BANK_ACCOUNT_PATTERN, message),
-        "ifsc_codes": re.findall(IFSC_PATTERN, message),
-        "phishing_links": re.findall(URL_PATTERN, message)
+        "upi_ids": list(set(re.findall(UPI_PATTERN, message))),
+        "bank_accounts": list(set(match[1] for match in re.findall(BANK_ACCOUNT_PATTERN, message))),
+        "ifsc_codes": list(set(re.findall(IFSC_PATTERN, message))),
+        "phishing_links": list(set(re.findall(URL_PATTERN, message)))
     }
+
 
 # -----------------------------
 # Deterministic Agent Reply
@@ -77,7 +93,7 @@ def generate_agent_reply(message: str) -> str:
 
     if is_scam:
         return (
-            "This message shows signs of a scam attempt. "
+            "This message shows signs of a scam attempt (e.g., urgency, financial request, or suspicious links). "
             "Please do not share personal or financial information."
         )
 
