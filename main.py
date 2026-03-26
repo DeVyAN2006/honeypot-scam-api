@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import logic safely
 try:
     import logic
-except Exception:
+    print("✅ Logic imported successfully")
+except Exception as e:
+    print("❌ Logic import failed:", e)
     logic = None
 
 logging.basicConfig(level=logging.INFO)
